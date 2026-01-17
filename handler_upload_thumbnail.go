@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"net/http"
 	"io"
+	"os"
+	"strings"
+	"mime"
+	"crypto/rand"
 	"encoding/base64"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
@@ -30,10 +34,8 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-
 	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
-	// TODO: implement the upload here
 	const maxMemory = 10 << 20
 	err = r.ParseMultipartForm(maxMemory)
 	if err != nil {
@@ -41,17 +43,26 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	file, header, err := r.FormFile("thumbnail")
+	src_file, header, err := r.FormFile("thumbnail")
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Couldn't get file metadata", err)
 		return
 	}
 
-	mediaType := header.Header["Content-Type"][0]
+	mediaType := header.Header.Get("Content-Type")
+	if mediaType == "" {
+		respondWithError(w, http.StatusBadRequest, "Missing Content-Type for thumbnail", nil)
+		return
+	}
 
-	data, err := io.ReadAll(file)
+	parsedMediaType, _, err := mime.ParseMediaType(mediaType)
 	if err != nil {
-		respondWithError(w, http.StatusBadRequest, "Couldn't read file bytes", err)
+		respondWithError(w, http.StatusBadRequest, "Couldn't parse mime type", err)
+		return
+	}
+
+	if parsedMediaType != "image/jpeg" && parsedMediaType != "image/png" {
+		respondWithError(w, http.StatusBadRequest, "Invalid file type", err)
 		return
 	}
 
@@ -65,11 +76,29 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	base64_data := base64.StdEncoding.EncodeToString(data)
-	dataURL := fmt.Sprintf("data:%s;base64,%s", mediaType, base64_data)
+	file_extension := mediaType[strings.Index(mediaType, "/")+1:]
+	dst_file, err := os.Create(fmt.Sprintf("assets/%s.%s", videoID, file_extension))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Couldn't create destination file", err)
+		return
+	}
 
-	//new_thumbnail := fmt.Sprintf("http://localhost:%s/api/thumbnails/%s", cfg.port, videoID)
-	video_data.ThumbnailURL = &dataURL
+	_, err = io.Copy(dst_file, src_file)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Couldn't copy file", err)
+		return
+	}
+
+	thumbnail_name_bytes := make([]byte, 32)
+	rand.Read(thumbnail_name_bytes)
+	fmt.Println(thumbnail_name_bytes)
+	thumbnail_name := base64.RawURLEncoding.EncodeToString(thumbnail_name_bytes)
+	fmt.Println(thumbnail_name)
+	
+
+	new_thumbnail_url := fmt.Sprintf("http://localhost:%s/assets/%s.%s", cfg.port, thumbnail_name, file_extension)
+	fmt.Printf(new_thumbnail_url)
+	video_data.ThumbnailURL = &new_thumbnail_url
 	err = cfg.db.UpdateVideo(video_data)
 	if err != nil {
 		respondWithError(w, 500, "Couldn't update video thumbnail", err)
